@@ -1,0 +1,51 @@
+name: Meade CI & Security Gate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test-and-verify:
+    name: Cryptographic, IPC & TUI Verification (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Stable Rust Toolchain (2024 Edition)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cargo Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy Security, Unsafe FFI & Unwrap Audit
+        run: cargo clippy --all-targets -- -D warnings -W clippy::unwrap_used
+
+      - name: Install & Run RustSec Cargo Audit
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Verify Zero RustSec Advisories
+        if: runner.os == 'Linux'
+        run: cargo audit
+
+      - name: Execute Full Integration, Live Socket Exploit, Proptest & TestBackend Suite
+        run: cargo test --verbose
