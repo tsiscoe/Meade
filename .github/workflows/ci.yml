@@ -25,7 +25,7 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Stable Rust Toolchain (2024 Edition)
         uses: dtolnay/rust-toolchain@stable
