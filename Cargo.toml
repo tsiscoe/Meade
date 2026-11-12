@@ -29,7 +29,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # TUI, CLI & Async Runtime
 ratatui = { version = "0.30", features = ["macros"] }
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1.42", features = ["full"] }
 futures = "0.3"
 clap = { version = "4.5", features = ["derive", "env"] }
