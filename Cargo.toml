@@ -42,7 +42,7 @@ dirs = "5.0"
 # OS Keyring, Clipboard & Global Hotkey
 keyring = { version = "3.6", features = ["windows-native", "apple-native", "linux-native"] }
 arboard = "3.4"
-global-hotkey = "0.6"
+global-hotkey = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
