@@ -1,0 +1,31 @@
+# Meade — AI Agent & LLM Context Index (llms.txt)
+
+> Meade is a pure-Rust (2024 Edition) cryptographic credential vault, Win32 clipboard interceptor daemon, and Ratatui v0.30+ terminal catalogue viewer. It uses a Two-Tier AEAD Envelope (`Argon2id` + `HKDF-SHA256` + `XChaCha20-Poly1305` + `Zeroize`) over a WAL-mode SQLite engine, pins subkeys in physical RAM via Win32 `VirtualLock`, attaches Windows Clipboard History/Cloud exclusion flags, and steps through sequential paste queues (`Username -> Password -> TOTP -> Auto-Scrub`) via a global `Ctrl+Shift+V` hotkey.
+
+## Repository Map & Core Modules
+
+- `Cargo.toml`: Crate manifest (`meade v0.2.0`, Rust 2024 Edition, MIT License).
+- `src/main.rs`: CLI entrypoint (`color_eyre::install()` before `ratatui::init()`, key resolution across Daemon RAM -> OS Keyring -> Argon2id passphrase prompt, subcommand routing).
+- `src/cli.rs`: Clap v4 derive schema (`init`, `tui`, `unlock`, `lock`, `add`, `list`, `queue`, `daemon`, `import`, `export`).
+- `src/error.rs`: Unified `MeadeError` enum and `Result<T>` alias.
+- `src/crypto/mod.rs`: `VaultKeys` derivation (`Argon2id` 64 MiB / 3 iters / 4 lanes + `HKDF-SHA256` subkey expansion into `tier1_header_key`, `tier2_payload_key`, and `verifier_tag`).
+- `src/crypto/envelope.rs`: `seal_envelope` and `open_envelope` using `XChaCha20-Poly1305` (24-byte `XNonce`) with row-bound Associated Data (`AAD = "meade-aad-v1|" || tier || "|" || entry_id`).
+- `src/crypto/memlock.rs`: `PinnedKey` struct locking 32-byte keys in non-pageable physical RAM via Win32 `VirtualLock`, wiping via `Zeroize` on `Drop`, plus Windows Credential Manager (`keyring`) helpers.
+- `src/db/models.rs`: `SecretCategory` (`Login`, `ApiKey`, `SshKey`, `TotpOnly`, `SecureNote`), `Tier1Header`, `Tier2Secret` (`ZeroizeOnDrop`), and `CatalogueItem`.
+- `src/db/mod.rs`: `VaultDb` SQLite WAL repository (`secure_delete = ON`, `vault_meta` canary authentication, Tier-1-only `list_catalogue`, on-demand single-row `decrypt_secret`).
+- `src/totp.rs`: RFC 6238 / RFC 4226 6-digit TOTP generator (`HMAC-SHA1`) and `otpauth://` URI secret parser.
+- `src/importer.rs`: `.env`, JSON, and `~/.ssh/config` import/export engines.
+- `src/daemon/mod.rs`: Background TCP IPC server (`127.0.0.1:49731`), Win32 `RegisterHotKey` (`Ctrl+Shift+V`) thread, and 500ms TTL auto-scrubber.
+- `src/daemon/clipboard.rs`: `write_secret_to_clipboard` and `scrub_clipboard` setting Win32 `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory = 0`, and `CanUploadToCloudClipboard = 0`.
+- `src/daemon/queue.rs`: `SequentialPasteQueue` state machine (`Identity -> PrimarySecret -> TotpCode -> Scrub`).
+- `src/tui/app.rs` & `src/tui/ui.rs`: Ratatui v0.30+ TEA state machine and 3-pane layout renderer.
+- `tests/integration_tests.rs`: 6 integration tests covering AAD tamper rejection, SQLite zero-plaintext disk verification, RFC 6238 TOTP, sequential queue transitions, importers, and headless `TestBackend` UI navigation.
+
+## Documentation Files
+
+- [README.md](README.md): Overview, architecture diagram, quick start, TUI keybindings, and CLI guide.
+- [ARCHITECTURE.md](ARCHITECTURE.md): Cryptographic specification, AAD format, `VirtualLock` lifecycle, Win32 clipboard flags, and threat model.
+- [INSTALL.md](INSTALL.md): Prerequisites, build instructions, daemon setup, and troubleshooting.
+- [CONTRIBUTING.md](CONTRIBUTING.md): Security invariants, zero-`unwrap()` rule, and test guidelines.
+- [CHANGELOG.md](CHANGELOG.md): Version history.
+- [LICENSE](LICENSE): MIT License.

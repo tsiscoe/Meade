@@ -1,0 +1,63 @@
+[package]
+name = "meade"
+version = "0.2.0"
+edition = "2024"
+description = "Meade: Pure-Rust Two-Tier AEAD Credential Vault, Win32 Clipboard Interceptor Daemon & Ratatui v0.30+ Catalogue Viewer"
+authors = ["tsiscoe"]
+license = "MIT"
+
+[dependencies]
+# Cryptography & Memory Hygiene (Pure RustCrypto)
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+rand = "0.8"
+subtle = "2.6"
+zeroize = { version = "1.8", features = ["derive"] }
+base64 = "0.22"
+data-encoding = "2.6"
+
+# Storage & Serialization
+rusqlite = { version = "0.42", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# TUI, CLI & Async Runtime
+ratatui = { version = "0.30", features = ["macros"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1.42", features = ["full"] }
+futures = "0.3"
+clap = { version = "4.5", features = ["derive", "env"] }
+color-eyre = "0.6"
+thiserror = "2.0"
+fuzzy-matcher = "0.3"
+rpassword = "7.3"
+dirs = "5.0"
+
+# OS Keyring, Clipboard & Global Hotkey
+keyring = { version = "3.6", features = ["windows-native", "apple-native", "linux-native"] }
+arboard = "3.4"
+global-hotkey = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_DataExchange",
+    "Win32_System_Ole",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+[dev-dependencies]
+tempfile = "3.14"
+proptest = "1.5"
+
+[lints.clippy]
+unwrap_used = "warn"
+undocumented_unsafe_blocks = "deny"
