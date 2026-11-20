@@ -1,6 +1,6 @@
 # Meade
 
-**Pure-Rust Two-Tier AEAD Credential Vault, Win32 Clipboard Interceptor Daemon & Ratatui v0.30+ Catalogue Viewer**
+**Terminal password vault that keeps secrets encrypted in RAM while you browse and feeds logins to your clipboard one paste at a time without leaking to OS history. Pure Rust.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-ec3013.svg)](LICENSE)
 [![Rust: 2024 Edition](https://img.shields.io/badge/Rust-2024_Edition-121316.svg)](Cargo.toml)
