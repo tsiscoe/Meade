@@ -2,54 +2,103 @@ name: Meade CI & Security Gate
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   pull_request:
-    branches: ["main"]
+    branches: [ "main" ]
   schedule:
     # Weekly supply-chain & RustSec advisory audit (Mondays at 06:00 UTC)
-    - cron: "0 6 * * 1"
+    - cron: '0 6 * * 1'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  test-and-verify:
-    name: Cryptographic, IPC & TUI Verification (${{ matrix.os }})
+  lint:
+    name: Lint (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
 
-      - name: Install Stable Rust Toolchain (2024 Edition)
-        uses: dtolnay/rust-toolchain@stable
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: "1.99.1"
           components: rustfmt, clippy
 
-      - name: Rust Cargo Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
 
-      - name: Check Formatting
+      - name: Check formatting (rustfmt)
         run: cargo fmt --all -- --check
 
-      - name: Run Clippy Security, Unsafe FFI & Unwrap Audit
-        run: cargo clippy --all-targets -- -D warnings -W clippy::unwrap_used
+      - name: Lint with Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings -W clippy::unwrap_used
 
-      - name: Install & Run RustSec Cargo Audit
-        if: runner.os == 'Linux'
-        uses: taiki-e/install-action@v2
+  test:
+    name: Test (${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          tool: cargo-audit
+          persist-credentials: false
 
-      - name: Verify Zero RustSec Advisories
-        if: runner.os == 'Linux'
-        run: cargo audit
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy
 
-      - name: Execute Full Integration, Live Socket Exploit, Proptest & TestBackend Suite
-        run: cargo test --verbose
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+
+      - name: Build release binary
+        run: cargo build --locked --release --verbose
+
+      - name: Run unit, integration, and proptest suites
+        run: cargo test --locked --verbose
+
+  supply-chain:
+    name: Supply-chain audit (RustSec)
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: "1.99.1"
+
+      - name: Run cargo-audit
+        run: |
+          cargo install cargo-audit --version 0.23.0 --locked
+          # RUSTSEC-2026-0543 is an informational unmaintained notice for chrono (no CVE).
+          # Keep --deny warnings active so any new vulnerability, yanked, or unmaintained crate fails CI.
+          cargo audit --ignore RUSTSEC-2026-0543 --deny warnings
