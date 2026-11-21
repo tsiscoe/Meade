@@ -10,6 +10,9 @@ updates:
     labels:
       - "dependencies"
       - "rust"
+    ignore:
+      - dependency-name: "sha2"
+        versions: [">= 0.11.0"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
