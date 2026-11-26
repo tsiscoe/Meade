@@ -19,6 +19,7 @@ use meade::db::VaultDb;
 use meade::db::models::{Tier1Header, Tier2Secret};
 use meade::importer::{
     export_dotenv_str, export_json_str, import_dotenv_str, import_json_str, import_ssh_config_str,
+    sanitize_terminal_str,
 };
 use meade::tui::run_interactive_tui;
 
@@ -46,11 +47,16 @@ async fn resolve_unlocked_keys(db: &VaultDb, cli: &MeadeCli) -> color_eyre::Resu
     if let Ok(DaemonResponse::SessionKeys {
         b64_blob: Some(b64),
     }) = send_daemon_request(DEFAULT_DAEMON_ADDR, &DaemonRequest::FetchSessionKeys).await
-        && let Ok(decoded) = B64.decode(b64.as_bytes())
-        && let Ok(keys) = VaultKeys::from_session_blob(&decoded)
-        && db.verify_session_keys(&keys).is_ok()
     {
-        return Ok(keys);
+        let b64_zero = Zeroizing::new(b64);
+        if let Ok(decoded_raw) = B64.decode(b64_zero.as_bytes()) {
+            let decoded = Zeroizing::new(decoded_raw);
+            if let Ok(keys) = VaultKeys::from_session_blob(&decoded)
+                && db.verify_session_keys(&keys).is_ok()
+            {
+                return Ok(keys);
+            }
+        }
     }
 
     // 2. Check Windows Credential Manager (OS Keyring) if `--keyring` was passed
@@ -72,10 +78,11 @@ async fn resolve_unlocked_keys(db: &VaultDb, cli: &MeadeCli) -> color_eyre::Resu
 
     // Cache in running Daemon RAM if daemon is active
     let raw = keys.export_session_blob();
+    let encoded = Zeroizing::new(B64.encode(raw.as_slice()));
     let _ = send_daemon_request(
         DEFAULT_DAEMON_ADDR,
         &DaemonRequest::StoreSessionKeys {
-            b64_blob: B64.encode(raw.as_slice()),
+            b64_blob: (*encoded).clone(),
         },
     )
     .await;
@@ -143,10 +150,28 @@ async fn main() -> color_eyre::Result<()> {
         Commands::Lock => {
             let _ = clear_os_keyring();
             let _ = scrub_clipboard();
-            let _ = send_daemon_request(DEFAULT_DAEMON_ADDR, &DaemonRequest::LockSession).await;
-            println!(
-                "[MEADE] Session locked: OS Keyring purged, Daemon RAM wiped, and Clipboard scrubbed."
-            );
+            match send_daemon_request(DEFAULT_DAEMON_ADDR, &DaemonRequest::LockSession).await {
+                Ok(DaemonResponse::QueueUpdated { .. }) => {
+                    println!(
+                        "[MEADE] Session locked: OS Keyring purged, Daemon RAM wiped, and Clipboard scrubbed."
+                    );
+                }
+                Ok(DaemonResponse::Error { message }) => {
+                    println!(
+                        "[MEADE] OS Keyring and Clipboard scrubbed, but Daemon LockSession rejected: {message}"
+                    );
+                }
+                Ok(other) => {
+                    println!(
+                        "[MEADE] OS Keyring and Clipboard scrubbed; unexpected daemon response: {other:?}"
+                    );
+                }
+                Err(_) => {
+                    println!(
+                        "[MEADE] Session locked: OS Keyring purged and Clipboard scrubbed (daemon not running)."
+                    );
+                }
+            }
         }
 
         Commands::Add {
@@ -218,14 +243,14 @@ async fn main() -> color_eyre::Result<()> {
                     .header
                     .tags
                     .iter()
-                    .map(|t| format!("[{t}]"))
+                    .map(|t| format!("[{}]", sanitize_terminal_str(t, false)))
                     .collect::<Vec<_>>()
                     .join(" ");
                 println!(
                     "{:<10} | {:<32} | {:<24} | {:<18}",
                     item.header.category.short_badge(),
-                    item.header.title,
-                    item.header.identity,
+                    sanitize_terminal_str(&item.header.title, false),
+                    sanitize_terminal_str(&item.header.identity, false),
                     tags
                 );
             }
@@ -266,8 +291,8 @@ async fn main() -> color_eyre::Result<()> {
                 } else {
                     write_secret_to_clipboard(&sec.primary_secret)?;
                     println!(
-                        "[MEADE DIRECT] Copied primary secret for `{}` with Win32 privacy flags.",
-                        item.header.title
+                        "[MEADE DIRECT] Copied primary secret for `{}` with Win32 privacy flags. WARNING: daemon not running — no TTL auto-scrub active; run `meade queue scrub` after pasting.",
+                        sanitize_terminal_str(&item.header.title, false)
                     );
                 }
             }

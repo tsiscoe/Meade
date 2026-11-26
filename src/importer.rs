@@ -26,13 +26,25 @@ pub struct ExportedEntry {
     pub notes: String,
 }
 
-/// Sanitizes untrusted imported strings by stripping terminal ANSI escape / ASCII control characters
-/// (except `\n` and `\t` for notes) to prevent terminal escape sequence injection (CWE-150).
+/// Sanitizes untrusted imported/rendered strings by stripping terminal ANSI escape / ASCII control
+/// characters (except `\n` and `\t` when `allow_newlines` is true) and Unicode Bidi override /
+/// directional-isolate / invisible format characters (`MEADE-HORDE-07`, `CWE-150` / `CWE-451`).
 pub fn sanitize_terminal_str(input: &str, allow_newlines: bool) -> String {
     input
         .chars()
         .filter(|&c| {
-            if allow_newlines && (c == '\n' || c == '\t') {
+            let is_bidi_or_invisible = matches!(
+                c,
+                '\u{061C}'
+                    | '\u{200E}'
+                    | '\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{FEFF}'
+            );
+            if is_bidi_or_invisible {
+                false
+            } else if allow_newlines && (c == '\n' || c == '\t') {
                 true
             } else {
                 !c.is_control()

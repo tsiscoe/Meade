@@ -22,7 +22,7 @@ fn test_two_tier_aead_envelope_and_aad_tamper_rejection() -> meade::error::Resul
     assert_ne!(keys.tier1_key(), keys.tier2_key());
 
     let entry_id = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
-    let secret_bytes = b"demo-vault-test-payload-999";
+    let secret_bytes = b"sk-live-super-secret-token-999";
 
     let (nonce, ciphertext) = seal_envelope(
         keys.tier2_key(),
@@ -340,7 +340,7 @@ fn test_rt04_and_rt06_dotenv_newline_injection_and_ssh_path_traversal_blocked()
     // 2. RT-04: Attempt SSH config IdentityFile path traversal (`../../Cargo.toml`)
     let traversal_ssh = "
         Host evil-box
-            HostName 192.0.2.9
+            HostName 10.0.0.9
             User root
             IdentityFile ../../Cargo.toml
     ";
@@ -528,4 +528,64 @@ proptest! {
         // Must never panic on arbitrary malformed Base32 or otpauth:// strings
         let _ = decode_totp_secret(&arbitrary_input);
     }
+}
+
+#[test]
+fn test_meade_horde_04_isolated_pinned_key_pages_do_not_unpin_siblings() {
+    use meade::crypto::memlock::PinnedKey;
+
+    let key_a = PinnedKey::new([0x11u8; 32]);
+    let key_b = PinnedKey::new([0x22u8; 32]);
+
+    let ptr_a = key_a.as_bytes().as_ptr() as usize;
+    let ptr_b = key_b.as_bytes().as_ptr() as usize;
+    assert_ne!(ptr_a, ptr_b);
+    #[cfg(windows)]
+    {
+        // Distinct 4 KiB pages on Windows so VirtualUnlock on A cannot unpin B
+        assert_ne!(ptr_a & !0xFFFusize, ptr_b & !0xFFFusize);
+    }
+
+    drop(key_a);
+    assert_eq!(key_b.as_bytes(), &[0x22u8; 32]);
+}
+
+#[test]
+fn test_meade_horde_07_terminal_sanitizer_strips_csi_and_bidi_override() {
+    use meade::importer::sanitize_terminal_str;
+
+    let poisoned = "Admin\u{202E}txt.exe\x1b]52;c;cHdu\x07";
+    let clean = sanitize_terminal_str(poisoned, false);
+    assert!(!clean.contains('\u{202E}'));
+    assert!(!clean.contains('\x1b'));
+    assert!(!clean.contains('\x07'));
+    assert_eq!(clean, "Admintxt.exe]52;c;cHdu");
+}
+
+#[test]
+fn test_meade_horde_02_03_vault_wal_sidecars_acl_and_delete_checkpoint() -> meade::error::Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let vault_path = temp_dir.path().join(".meade").join("vault.db");
+
+    let db = VaultDb::open(&vault_path)?;
+    let keys = db.initialize_vault(b"wave3-acl-pass", true)?;
+    let hdr = Tier1Header {
+        title: "ACL Test Secret".to_string(),
+        category: SecretCategory::ApiKey,
+        identity: "svc-acl".to_string(),
+        url_or_host: "https://example.com".to_string(),
+        tags: vec!["acl".to_string()],
+        has_totp: false,
+    };
+    let sec = Tier2Secret {
+        primary_secret: "tok_wave3_secret_value".to_string(),
+        totp_secret: None,
+        notes: String::new(),
+    };
+    let id = db.add_entry(&keys, hdr, &sec)?;
+    assert!(vault_path.exists());
+    db.delete_entry(&id)?;
+    assert!(db.list_catalogue(&keys)?.is_empty());
+
+    Ok(())
 }

@@ -100,16 +100,20 @@ struct DaemonState {
 }
 
 /// Returns the path to the owner-only IPC authentication token file (`~/.meade/daemon.token`).
-pub fn daemon_token_path() -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        home.join(".meade").join("daemon.token")
-    } else {
-        PathBuf::from(".meade_daemon.token")
-    }
+pub fn daemon_token_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        MeadeError::Clipboard(
+            "Unable to resolve user home directory for `~/.meade/daemon.token`".to_string(),
+        )
+    })?;
+    Ok(home.join(".meade").join("daemon.token"))
 }
 
-/// Generates a fresh 256-bit CSPRNG token and writes it to `path` with strict owner-only permissions.
+/// Generates a fresh 256-bit CSPRNG token and writes it to `path` with strict owner-only permissions
+/// enforced BEFORE the secret bytes hit the file (`MEADE-HORDE-03`).
 pub fn generate_and_persist_ipc_token_at(path: &Path) -> Result<Zeroizing<String>> {
+    use std::io::Write;
+
     let mut raw = Zeroizing::new([0u8; 32]);
     OsRng.fill_bytes(raw.as_mut());
     let hex_token = Zeroizing::new(HEXLOWER.encode(raw.as_slice()));
@@ -117,19 +121,36 @@ pub fn generate_and_persist_ipc_token_at(path: &Path) -> Result<Zeroizing<String
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
+        let existed = parent.exists();
         std::fs::create_dir_all(parent)?;
-        enforce_owner_only_acl(parent, true);
+        let is_meade_dir = parent
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case(".meade"));
+        if !existed || is_meade_dir {
+            enforce_owner_only_acl(parent, true)?;
+        }
     }
 
-    std::fs::write(path, hex_token.as_bytes())?;
-    enforce_owner_only_acl(path, false);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    enforce_owner_only_acl(path, false)?;
+    file.write_all(hex_token.as_bytes())?;
+    file.flush()?;
 
     Ok(hex_token)
 }
 
 /// Generates a fresh 256-bit CSPRNG token and writes it to `~/.meade/daemon.token` with strict owner-only permissions.
 pub fn generate_and_persist_ipc_token() -> Result<Zeroizing<String>> {
-    generate_and_persist_ipc_token_at(&daemon_token_path())
+    let path = daemon_token_path()?;
+    generate_and_persist_ipc_token_at(&path)
 }
 
 /// Overwrites the IPC token file at `path` with zeros before unlinking it from the filesystem (RT-01b / RT-07).
@@ -142,12 +163,14 @@ pub fn secure_remove_ipc_token_at(path: &Path) {
 
 /// Overwrites `~/.meade/daemon.token` with zeros and removes it on daemon shutdown.
 pub fn secure_remove_ipc_token() {
-    secure_remove_ipc_token_at(&daemon_token_path());
+    if let Ok(path) = daemon_token_path() {
+        secure_remove_ipc_token_at(&path);
+    }
 }
 
 /// Loads the active IPC bearer token from `~/.meade/daemon.token`.
 pub fn load_ipc_token() -> Result<Zeroizing<String>> {
-    let path = daemon_token_path();
+    let path = daemon_token_path()?;
     let content = std::fs::read_to_string(&path).map_err(|e| {
         MeadeError::Clipboard(format!(
             "Could not read daemon IPC token at `{}`: {e}",
@@ -184,8 +207,8 @@ pub async fn run_daemon_server_with_idle_timeout(
     ttl_secs: u64,
     idle_timeout: Duration,
 ) -> Result<()> {
-    let auth_token = generate_and_persist_ipc_token()?;
     let listener = TcpListener::bind(addr).await?;
+    let auth_token = generate_and_persist_ipc_token()?;
     run_daemon_loop(listener, auth_token, ttl_secs, idle_timeout, true, true).await
 }
 

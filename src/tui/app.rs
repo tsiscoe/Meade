@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::widgets::TableState;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto::VaultKeys;
 use crate::daemon::clipboard::{scrub_clipboard, write_secret_to_clipboard};
@@ -88,10 +89,12 @@ impl ModalField {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct DraftEntryForm {
+    #[zeroize(skip)]
     pub active_field: ModalField,
     pub title: String,
+    #[zeroize(skip)]
     pub category_idx: usize,
     pub identity: String,
     pub url_or_host: String,
@@ -138,6 +141,7 @@ pub struct TuiApp {
     pub reveal_secret: bool,
     pub inspected_secret: Option<(String, Tier2Secret)>,
     pub live_totp: Option<TotpSnapshot>,
+    pub cached_totp_seed: Option<(String, Zeroizing<String>)>,
     pub local_queue: SequentialPasteQueue,
     pub queue_snapshot: QueueStatusSnapshot,
     pub status_toast: String,
@@ -161,6 +165,7 @@ impl TuiApp {
             reveal_secret: false,
             inspected_secret: None,
             live_totp: None,
+            cached_totp_seed: None,
             local_queue: SequentialPasteQueue::new(20),
             queue_snapshot: QueueStatusSnapshot::default(),
             status_toast: "Meade Vault Unlocked // Enter: Queue (User->Pass->TOTP) | Ctrl+Shift+V: Next Stage | /: Search | a: Add".to_string(),
@@ -221,6 +226,7 @@ impl TuiApp {
             self.table_state.select(None);
             self.inspected_secret = None;
             self.live_totp = None;
+            self.cached_totp_seed = None;
         } else {
             let current = self.table_state.selected().unwrap_or(0);
             let clamped = current.min(self.filtered_items.len() - 1);
@@ -229,30 +235,53 @@ impl TuiApp {
         }
     }
 
-    /// Decrypts the Tier-2 secret ONLY when the user explicitly toggles reveal (`r`) or when the item has TOTP.
+    /// Decrypts the Tier-2 secret ONLY when the user explicitly toggles reveal (`r`) or once per selected
+    /// TOTP entry to cache the seed in a `Zeroizing<String>` (`MEADE-HORDE-08`).
     pub fn sync_inspector_state(&mut self) {
         let Some(selected) = self.selected_item().cloned() else {
             self.inspected_secret = None;
             self.live_totp = None;
+            self.cached_totp_seed = None;
             return;
         };
 
-        if self.reveal_secret || selected.header.has_totp {
-            if let Ok(sec) = self.db.decrypt_secret(&self.keys, &selected.id) {
-                if let Some(totp_seed) = &sec.totp_secret {
-                    self.live_totp = generate_totp_now(totp_seed).ok();
-                } else {
-                    self.live_totp = None;
+        if !selected.header.has_totp {
+            self.cached_totp_seed = None;
+            self.live_totp = None;
+        } else if let Some((cached_id, cached_seed)) = &self.cached_totp_seed
+            && cached_id == &selected.id
+        {
+            self.live_totp = generate_totp_now(cached_seed.as_str()).ok();
+        } else if !self.reveal_secret
+            && let Ok(sec) = self.db.decrypt_secret(&self.keys, &selected.id)
+        {
+            if let Some(totp_seed) = &sec.totp_secret {
+                let zero_seed = Zeroizing::new(totp_seed.clone());
+                self.live_totp = generate_totp_now(zero_seed.as_str()).ok();
+                self.cached_totp_seed = Some((selected.id.clone(), zero_seed));
+            } else {
+                self.cached_totp_seed = None;
+                self.live_totp = None;
+            }
+        }
+
+        if self.reveal_secret {
+            let needs_decrypt = self
+                .inspected_secret
+                .as_ref()
+                .is_none_or(|(id, _)| id != &selected.id);
+            if needs_decrypt && let Ok(sec) = self.db.decrypt_secret(&self.keys, &selected.id) {
+                if selected.header.has_totp
+                    && let Some(totp_seed) = &sec.totp_secret
+                {
+                    let zero_seed = Zeroizing::new(totp_seed.clone());
+                    self.live_totp = generate_totp_now(zero_seed.as_str()).ok();
+                    self.cached_totp_seed = Some((selected.id.clone(), zero_seed));
                 }
-                if self.reveal_secret {
-                    self.inspected_secret = Some((selected.id, sec));
-                } else {
-                    self.inspected_secret = None;
-                }
+                self.inspected_secret = Some((selected.id, sec));
             }
         } else {
             self.inspected_secret = None;
-            self.live_totp = None;
         }
     }
 

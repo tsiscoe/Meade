@@ -68,7 +68,8 @@ pub async fn run_interactive_tui(db: VaultDb, keys: VaultKeys) -> color_eyre::Re
     reader_handle.abort();
     ratatui::restore();
 
-    if !app.local_queue.is_active() {
+    app.local_queue.clear();
+    if !app.headless_clipboard {
         let _ = scrub_clipboard();
     }
     Ok(())

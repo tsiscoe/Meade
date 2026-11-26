@@ -83,7 +83,7 @@ fn render_header_and_search(app: &TuiApp, frame: &mut Frame, area: Rect) {
             search_prefix,
             Style::default().fg(ACCENT_RED).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(&app.search_query),
+        Span::raw(sanitize_terminal_str(&app.search_query, false)),
     ]);
     let search_box = Paragraph::new(search_text).block(
         Block::default()
@@ -245,26 +245,26 @@ fn render_inspector_pane(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let secret_display = if app.reveal_secret {
         app.inspected_secret
             .as_ref()
-            .map(|(_, s)| s.primary_secret.as_str())
-            .unwrap_or("<empty>")
+            .map(|(_, s)| sanitize_terminal_str(&s.primary_secret, true))
+            .unwrap_or_else(|| "<empty>".to_string())
     } else {
-        "•••••••••••••••••••••••• [Sealed in Tier-2 XChaCha20 — Press 'r' to reveal]"
+        "•••••••••••••••••••••••• [Sealed in Tier-2 XChaCha20 — Press 'r' to reveal]".to_string()
     };
 
     let notes_display = if app.reveal_secret {
         app.inspected_secret
             .as_ref()
-            .map(|(_, s)| s.notes.as_str())
-            .unwrap_or("")
+            .map(|(_, s)| sanitize_terminal_str(&s.notes, true))
+            .unwrap_or_default()
     } else {
-        "[Encrypted until revealed or queued]"
+        "[Encrypted until revealed or queued]".to_string()
     };
 
     let lines = vec![
         Line::from(vec![
             Span::styled("Title:    ", Style::default().fg(MUTED_GRAY)),
             Span::styled(
-                &item.header.title,
+                sanitize_terminal_str(&item.header.title, false),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         ]),
@@ -278,11 +278,11 @@ fn render_inspector_pane(app: &TuiApp, frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Identity: ", Style::default().fg(MUTED_GRAY)),
-            Span::raw(&item.header.identity),
+            Span::raw(sanitize_terminal_str(&item.header.identity, false)),
         ]),
         Line::from(vec![
             Span::styled("Host/URL: ", Style::default().fg(MUTED_GRAY)),
-            Span::raw(&item.header.url_or_host),
+            Span::raw(sanitize_terminal_str(&item.header.url_or_host, false)),
         ]),
         Line::from(vec![
             Span::styled("Secret:   ", Style::default().fg(MUTED_GRAY)),
@@ -365,7 +365,7 @@ fn render_queue_footer(app: &TuiApp, frame: &mut Frame, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                &q.entry_title,
+                sanitize_terminal_str(&q.entry_title, false),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
@@ -410,7 +410,7 @@ fn render_queue_footer(app: &TuiApp, frame: &mut Frame, area: Rect) {
             " [STATUS] ",
             Style::default().fg(ACCENT_RED).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(&app.status_toast),
+        Span::raw(sanitize_terminal_str(&app.status_toast, false)),
     ]);
 
     let footer = Paragraph::new(vec![queue_line, toast_line]).block(
@@ -481,8 +481,8 @@ fn render_confirm_delete_modal(app: &TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, popup);
     let title = app
         .selected_item()
-        .map(|i| i.header.title.as_str())
-        .unwrap_or("selected entry");
+        .map(|i| sanitize_terminal_str(&i.header.title, false))
+        .unwrap_or_else(|| "selected entry".to_string());
 
     let text = vec![
         Line::raw(""),

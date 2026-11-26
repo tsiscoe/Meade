@@ -14,36 +14,115 @@ use crate::error::{MeadeError, Result};
 const CANARY_ENTRY_ID: &str = "__meade_vault_canary_v1__";
 const CANARY_PLAINTEXT: &[u8] = b"MEADE_VAULT_AUTHENTICATED_CANARY_V1";
 
-/// Enforces strict owner-only filesystem permissions (`0700`/`0600` on Unix; `icacls /inheritance:r`
-/// owner-only DACL on Windows) to neutralize multi-user local file reads (RT-01b / RT-07).
-pub fn enforce_owner_only_acl(path: &Path, is_dir: bool) {
+/// Enforces fail-closed owner-only filesystem permissions (`0700`/`0600` on Unix; absolute
+/// `System32\icacls.exe /inheritance:r` owner-SID DACL on Windows) (`MEADE-HORDE-02` / `03`).
+pub fn enforce_owner_only_acl(path: &Path, is_dir: bool) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = if is_dir { 0o700 } else { 0o600 };
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        let applied = std::fs::metadata(path)?.permissions().mode() & 0o777;
+        if applied != mode {
+            return Err(MeadeError::Io(std::io::Error::other(format!(
+                "effective Unix mode {:o} != {:o} on {}",
+                applied,
+                mode,
+                path.display()
+            ))));
+        }
+        Ok(())
     }
     #[cfg(windows)]
     {
-        let _ = is_dir;
-        if let Ok(username) = std::env::var("USERNAME")
-            && !username.trim().is_empty()
-        {
-            let grant_owner = format!("{username}:(F)");
-            let _ = std::process::Command::new("icacls")
-                .arg(path)
-                .args([
-                    "/inheritance:r",
-                    "/grant:r",
-                    &grant_owner,
-                    "*S-1-5-18:(F)",
-                    "*S-1-5-32-544:(F)",
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
+        let sid = resolve_windows_owner_sid()?;
+        let icacls_exe = resolve_system32_binary("icacls.exe");
+        let (grant_owner, grant_system, grant_admins) = if is_dir {
+            (
+                format!("*{sid}:(OI)(CI)F"),
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+            )
+        } else {
+            (
+                format!("*{sid}:F"),
+                "*S-1-5-18:(F)",
+                "*S-1-5-32-544:(F)",
+            )
+        };
+        let output = std::process::Command::new(&icacls_exe)
+            .arg(path)
+            .args([
+                "/inheritance:r",
+                "/grant:r",
+                &grant_owner,
+                grant_system,
+                grant_admins,
+            ])
+            .output()?;
+        if !output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MeadeError::Io(std::io::Error::other(format!(
+                "icacls failed on {} ({}): {} {}",
+                path.display(),
+                output.status,
+                stdout.trim(),
+                stderr.trim()
+            ))));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn resolve_system32_binary(name: &str) -> std::path::PathBuf {
+    let sys_root = std::env::var_os("SystemRoot")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    sys_root.join("System32").join(name)
+}
+
+#[cfg(windows)]
+fn resolve_windows_owner_sid() -> Result<String> {
+    let whoami_exe = resolve_system32_binary("whoami.exe");
+    let output = std::process::Command::new(&whoami_exe)
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()?;
+    if !output.status.success() {
+        return Err(MeadeError::Io(std::io::Error::other(format!(
+            "whoami.exe /user failed with status {}",
+            output.status
+        ))));
+    }
+    let csv = String::from_utf8_lossy(&output.stdout);
+    let sid = csv
+        .trim()
+        .split(',')
+        .next_back()
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .unwrap_or_default();
+    if !sid.starts_with("S-1-") || sid.chars().any(|c| !c.is_ascii_digit() && c != 'S' && c != '-') {
+        return Err(MeadeError::Io(std::io::Error::other(
+            "unable to parse valid Windows user SID from whoami.exe",
+        )));
+    }
+    Ok(sid)
+}
+
+/// Applies strict owner-only ACLs to the SQLite database and any live `-wal` / `-shm` sidecars.
+pub fn enforce_db_and_sidecar_acls(db_path: &Path) -> Result<()> {
+    enforce_owner_only_acl(db_path, false)?;
+    for suffix in ["-wal", "-shm"] {
+        let mut os = db_path.as_os_str().to_os_string();
+        os.push(suffix);
+        let sidecar = std::path::PathBuf::from(os);
+        if sidecar.exists() {
+            enforce_owner_only_acl(&sidecar, false)?;
         }
     }
+    Ok(())
 }
 
 /// SQLite-backed Two-Tier Cryptographic Vault operating in WAL mode.
@@ -54,18 +133,26 @@ pub struct VaultDb {
 impl VaultDb {
     /// Opens or creates a SQLite vault file at `path` with WAL mode, strict foreign keys, and owner-only permissions.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        if let Some(parent) = path.as_ref().parent()
+        let path_ref = path.as_ref();
+        if let Some(parent) = path_ref.parent()
             && !parent.as_os_str().is_empty()
         {
+            let parent_existed = parent.exists();
             std::fs::create_dir_all(parent)?;
-            enforce_owner_only_acl(parent, true);
+            let is_meade_dir = parent
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(".meade"));
+            if !parent_existed || is_meade_dir {
+                enforce_owner_only_acl(parent, true)?;
+            }
         }
-        let conn = Connection::open(&path)?;
-        enforce_owner_only_acl(path.as_ref(), false);
+        let conn = Connection::open(path_ref)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "secure_delete", "ON")?;
+        enforce_db_and_sidecar_acls(path_ref)?;
 
         let db = Self { conn };
         db.init_schema()?;
@@ -320,7 +407,7 @@ impl VaultDb {
         Ok(())
     }
 
-    /// Deletes an entry from the vault (`secure_delete = ON` zeroes freed SQLite pages).
+    /// Deletes an entry from the vault (`secure_delete = ON` zeroes freed SQLite pages and truncates WAL).
     pub fn delete_entry(&self, entry_id: &str) -> Result<()> {
         let affected = self
             .conn
@@ -328,6 +415,7 @@ impl VaultDb {
         if affected == 0 {
             return Err(MeadeError::NotFound(entry_id.to_string()));
         }
+        let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         Ok(())
     }
 
